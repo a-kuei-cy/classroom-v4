@@ -1,0 +1,730 @@
+import React, { useState, useEffect, useRef } from 'react';
+import { Users, UserPlus, Trash2, Edit2, History, Award, CheckCircle, Clock, Gift, Settings, Volume2, User, Save, X, Plus, LogOut, Loader2, KeyRound } from 'lucide-react';
+
+// ==========================================
+// ⚠️ 請將此處替換為您的 Google Apps Script Web App URL
+// 當您發布後，將下面這行改為：
+// const GAS_URL = "https://script.google.com/macros/s/您的ID/exec";
+// ==========================================
+const GAS_URL = "https://script.google.com/macros/s/AKfycbzLA8U7i1QlpMUpRiXfCZQd8zxmouIe4F5Ol4Jnzq2mlSUosujJN7lwCqFHl8_lHnnjow/exec"; 
+
+// --- Mock Backend (符合預覽環境的記憶體資料庫) ---
+const mockDB = {
+    students: [],
+    logs: []
+};
+// ---------------------------------------------
+
+// 預設加分事由
+const DEFAULT_REASONS = [
+    { id: 'r1', label: '上課專注', points: 1 },
+    { id: 'r2', label: '主動發言', points: 2 },
+    { id: 'r3', label: '作業完成', points: 1 },
+    { id: 'r4', label: '幫助同學', points: 2 },
+    { id: 'r5', label: '環境整潔', points: 1 },
+    { id: 'r6', label: '秩序良好', points: 1 }
+];
+
+const LoginScreen = ({ onLogin }) => {
+    const [classCode, setClassCode] = useState('');
+
+    const handleSubmit = (e) => {
+        e.preventDefault();
+        if (classCode.trim()) {
+            onLogin(classCode.trim());
+        }
+    };
+
+    return (
+        <div className="min-h-screen bg-sky-50 flex items-center justify-center p-4">
+            <div className="bg-white p-8 rounded-3xl shadow-xl max-w-md w-full border border-slate-100">
+                <div className="text-center mb-8">
+                    <div className="bg-amber-400 w-20 h-20 rounded-2xl flex items-center justify-center shadow-inner mx-auto mb-4">
+                        <span className="text-4xl">🌱</span>
+                    </div>
+                    <h1 className="text-2xl font-bold text-slate-800">班級點數管理系統</h1>
+                    <p className="text-slate-500 mt-2">請輸入您的班級代碼以進入專屬空間</p>
+                </div>
+                
+                <form onSubmit={handleSubmit} className="space-y-4">
+                    <div>
+                        <label className="block text-sm font-medium text-slate-700 mb-2">班級專屬代碼</label>
+                        <div className="relative">
+                            <KeyRound className="absolute left-4 top-1/2 -translate-y-1/2 text-slate-400 w-5 h-5" />
+                            <input
+                                type="text"
+                                className="w-full pl-12 pr-4 py-3 border border-slate-200 rounded-xl focus:ring-2 focus:ring-teal-500 focus:outline-none bg-slate-50 focus:bg-white transition-colors"
+                                placeholder="例如: CLASS-2023-A"
+                                value={classCode}
+                                onChange={(e) => setClassCode(e.target.value)}
+                                autoFocus
+                            />
+                        </div>
+                    </div>
+                    <button
+                        type="submit"
+                        className="w-full bg-teal-500 hover:bg-teal-600 text-white font-bold py-3.5 rounded-xl transition-all shadow-md active:scale-95"
+                    >
+                        進入班級
+                    </button>
+                </form>
+            </div>
+        </div>
+    );
+};
+
+export default function ClassPointSystem() {
+    // 登入狀態
+    const [classId, setClassId] = useState('');
+    const [isLoggedIn, setIsLoggedIn] = useState(false);
+    
+    // 系統狀態
+    const [isLoading, setIsLoading] = useState(false);
+    const [syncStatus, setSyncStatus] = useState('idle'); // idle, syncing, error
+    const [notification, setNotification] = useState(null);
+
+    // 資料狀態
+    const [students, setStudents] = useState([]);
+    const [logs, setLogs] = useState([]);
+    const [totalClassPoints, setTotalClassPoints] = useState(0);
+
+    // UI 狀態
+    const [activeTab, setActiveTab] = useState('dashboard');
+    const [selectedStudentId, setSelectedStudentId] = useState('');
+    const [selectedReason, setSelectedReason] = useState(null);
+    const [customPoints, setCustomPoints] = useState(1);
+
+    // 學生管理狀態
+    const [isStudentModalOpen, setIsStudentModalOpen] = useState(false);
+    const [editingStudent, setEditingStudent] = useState(null);
+    const [studentFormName, setStudentFormName] = useState('');
+    const [batchStudentInput, setBatchStudentInput] = useState('');
+    const [isBatchMode, setIsBatchMode] = useState(false);
+
+    // 確認對話框狀態 (取代原生 confirm)
+    const [confirmDialog, setConfirmDialog] = useState({ isOpen: false, title: '', message: '', onConfirm: null });
+
+    const handleLogin = (code) => {
+        setClassId(code);
+        setIsLoggedIn(true);
+        fetchInitialData(code);
+    };
+
+    const handleLogout = () => {
+        setClassId('');
+        setIsLoggedIn(false);
+        setStudents([]);
+        setLogs([]);
+    };
+
+    const showNotification = (msg, isError = false) => {
+        setNotification({ msg, isError });
+        setTimeout(() => setNotification(null), 3000);
+    };
+
+    const callGasApi = async (action, payload = {}, currentClassId = classId) => {
+        if (GAS_URL === "YOUR_GOOGLE_APPS_SCRIPT_WEB_APP_URL") {
+            // 在預覽環境中使用記憶體模擬後端運作，達成單一工作階段可用性
+            setSyncStatus('syncing');
+            return new Promise(resolve => {
+                setTimeout(() => {
+                    let result = { success: false, message: "Unknown action" };
+                    const ts = new Date().toISOString();
+                    try {
+                        switch (action) {
+                            case 'getInitialData':
+                                result = { success: true, students: [...mockDB.students], logs: mockDB.logs.slice(0, 20) };
+                                break;
+                            case 'addStudent':
+                                const newId = 'mock-' + Date.now();
+                                mockDB.students.push({ id: newId, classId: currentClassId, name: payload.name, seatNumber: payload.seatNumber || '', points: 0, createdAt: ts });
+                                result = { success: true, id: newId };
+                                break;
+                            case 'batchAddStudents':
+                                payload.students.forEach((s, idx) => {
+                                    mockDB.students.push({ id: 'mock-batch-' + Date.now() + '-' + idx, classId: currentClassId, name: s.name, seatNumber: s.seatNumber || '', points: 0, createdAt: ts });
+                                });
+                                result = { success: true };
+                                break;
+                            case 'updateStudent':
+                                const studentToUpdate = mockDB.students.find(s => s.id === payload.id);
+                                if (studentToUpdate) { studentToUpdate.name = payload.name; result = { success: true }; } 
+                                else { result = { success: false, message: 'Student not found' }; }
+                                break;
+                            case 'deleteStudent':
+                                mockDB.students = mockDB.students.filter(s => s.id !== payload.id);
+                                result = { success: true };
+                                break;
+                            case 'updatePoints':
+                                const pStudent = mockDB.students.find(s => s.id === payload.studentId);
+                                if (pStudent) {
+                                    pStudent.points = (pStudent.points || 0) + Number(payload.points);
+                                    const logId = 'mock-log-' + Date.now();
+                                    mockDB.logs.unshift({ id: logId, classId: currentClassId, studentId: payload.studentId, studentName: payload.studentName, points: payload.points, reason: payload.reason, timestamp: ts });
+                                    result = { success: true, newPoints: pStudent.points, logId, timestamp: ts };
+                                } else { result = { success: false, message: 'Student not found' }; }
+                                break;
+                            case 'resetAllPoints':
+                                mockDB.students.forEach(s => s.points = 0);
+                                result = { success: true };
+                                break;
+                            case 'clearLogs':
+                                mockDB.logs = [];
+                                result = { success: true };
+                                break;
+                        }
+                    } catch (e) { result = { success: false, message: e.toString() }; }
+                    
+                    setSyncStatus('idle');
+                    resolve(result);
+                }, 400); // 模擬網路延遲
+            });
+        }
+
+        setSyncStatus('syncing');
+        try {
+            const response = await fetch(GAS_URL, {
+                method: 'POST',
+                // Google Apps Script doPost 需要 redirect，fetch 預設會 follow
+                headers: { 'Content-Type': 'text/plain;charset=utf-8' },
+                body: JSON.stringify({ action, classId: currentClassId, payload })
+            });
+            
+            const result = await response.json();
+            setSyncStatus('idle');
+            
+            if (!result.success) {
+                console.error("API Error:", result.message);
+                showNotification(`操作失敗: ${result.message}`, true);
+                return null;
+            }
+            return result;
+        } catch (error) {
+            console.error("Fetch error:", error);
+            setSyncStatus('error');
+            showNotification("網路連線錯誤或 CORS 問題，請確認 GAS 部署設定。", true);
+            return null;
+        }
+    };
+
+    const fetchInitialData = async (currentClassId) => {
+        setIsLoading(true);
+        const result = await callGasApi('getInitialData', {}, currentClassId || classId);
+        if (result) {
+            const sortedStudents = (result.students || []).sort((a, b) => {
+                const numA = parseInt(a.seatNumber);
+                const numB = parseInt(b.seatNumber);
+                if (!isNaN(numA) && !isNaN(numB)) return numA - numB;
+                return a.name.localeCompare(b.name);
+            });
+            setStudents(sortedStudents);
+            setLogs(result.logs || []);
+            
+            const total = sortedStudents.reduce((sum, s) => sum + (Number(s.points) || 0), 0);
+            setTotalClassPoints(total);
+        }
+        setIsLoading(false);
+    };
+
+    const handleAddPoints = async (pointsToAdd) => {
+        if (!selectedStudentId) {
+            showNotification("請先選擇學生或小組！", true);
+            return;
+        }
+
+        const student = students.find(s => s.id === selectedStudentId);
+        if (!student) return;
+
+        const reasonText = selectedReason ? selectedReason.label : "一般加分";
+        const finalPoints = pointsToAdd !== undefined ? pointsToAdd : (selectedReason ? selectedReason.points : customPoints);
+
+        // 先進行樂觀更新 (Optimistic UI Update) 讓畫面感覺很快
+        const tempLogId = `temp-${Date.now()}`;
+        const newLog = {
+            id: tempLogId,
+            studentId: student.id,
+            studentName: student.name,
+            points: finalPoints,
+            reason: reasonText,
+            timestamp: new Date().toISOString()
+        };
+
+        setStudents(prev => prev.map(s => s.id === student.id ? { ...s, points: s.points + finalPoints } : s));
+        setLogs(prev => [newLog, ...prev].slice(0, 20));
+        setTotalClassPoints(prev => prev + finalPoints);
+        setSelectedReason(null);
+
+        // 背景同步到 Google Sheets
+        const result = await callGasApi('updatePoints', {
+            studentId: student.id,
+            studentName: student.name,
+            points: finalPoints,
+            reason: reasonText
+        });
+
+        // 如果失敗，重新拉取資料以恢復正確狀態
+        if (!result) {
+            fetchInitialData();
+        }
+    };
+
+    const handleClearLogs = async () => {
+        if (logs.length === 0) return;
+        
+        // 樂觀更新
+        setLogs([]);
+        await callGasApi('clearLogs');
+    };
+
+    const openStudentModal = (student = null, batch = false) => {
+        setEditingStudent(student);
+        setIsBatchMode(batch);
+        if (student) {
+            setStudentFormName(student.name);
+        } else {
+            setStudentFormName('');
+            setBatchStudentInput('');
+        }
+        setIsStudentModalOpen(true);
+    };
+
+    const closeStudentModal = () => {
+        setIsStudentModalOpen(false);
+        setEditingStudent(null);
+        setStudentFormName('');
+        setBatchStudentInput('');
+    };
+
+    const handleSaveStudent = async () => {
+        if (isBatchMode) {
+            const names = batchStudentInput.split('\n').map(n => n.trim()).filter(n => n !== '');
+            if (names.length === 0) return;
+
+            const newStudentsData = [];
+            for (let i = 0; i < names.length; i++) {
+                let name = names[i];
+                let seatNumber = `${i + 1 + students.length}`; // 預設座號
+                const match = name.match(/^(\d+)[\.\s]+(.*)/);
+                if (match) {
+                    seatNumber = match[1];
+                    name = match[2];
+                }
+                newStudentsData.push({ name, seatNumber });
+            }
+
+            closeStudentModal();
+            setIsLoading(true);
+            await callGasApi('batchAddStudents', { students: newStudentsData });
+            await fetchInitialData(); // 重新拉取全部
+        } else {
+            if (!studentFormName.trim()) return;
+
+            if (editingStudent) {
+                // 樂觀更新
+                setStudents(prev => prev.map(s => s.id === editingStudent.id ? { ...s, name: studentFormName } : s));
+                closeStudentModal();
+                await callGasApi('updateStudent', { id: editingStudent.id, name: studentFormName });
+            } else {
+                closeStudentModal();
+                setIsLoading(true);
+                await callGasApi('addStudent', { name: studentFormName, seatNumber: `${students.length + 1}` });
+                await fetchInitialData();
+            }
+        }
+    };
+
+    const requestDeleteStudent = (studentId) => {
+        setConfirmDialog({
+            isOpen: true,
+            title: '刪除學生',
+            message: '確定要刪除這位學生嗎？其點數將一併移除且無法復原。',
+            onConfirm: () => handleDeleteStudent(studentId)
+        });
+    };
+
+    const handleDeleteStudent = async (studentId) => {
+        setConfirmDialog({ isOpen: false });
+        // 樂觀更新
+        setStudents(prev => prev.filter(s => s.id !== studentId));
+        if (selectedStudentId === studentId) setSelectedStudentId('');
+        
+        await callGasApi('deleteStudent', { id: studentId });
+        fetchInitialData(); // 重新計算總分
+    };
+
+    const requestResetAllPoints = () => {
+        setConfirmDialog({
+            isOpen: true,
+            title: '重置全班點數',
+            message: '確定要將全班所有學生的點數歸零嗎？這項操作無法復原。',
+            onConfirm: handleResetAllPoints
+        });
+    };
+
+    const handleResetAllPoints = async () => {
+        setConfirmDialog({ isOpen: false });
+        if (students.length === 0) return;
+        
+        // 樂觀更新
+        setStudents(prev => prev.map(s => ({ ...s, points: 0 })));
+        setTotalClassPoints(0);
+        
+        await callGasApi('resetAllPoints');
+    };
+
+    if (!isLoggedIn) {
+        return <LoginScreen onLogin={handleLogin} />;
+    }
+
+    const renderMenuButton = (icon, label, colorClass, onClick) => (
+        <button 
+            onClick={onClick}
+            className={`${colorClass} rounded-2xl p-6 text-white shadow-md hover:shadow-lg transition-transform hover:-translate-y-1 flex flex-col items-center justify-center gap-3 aspect-video sm:aspect-auto sm:h-32 relative overflow-hidden group`}
+        >
+            <div className="absolute inset-0 bg-white opacity-0 group-hover:opacity-10 transition-opacity"></div>
+            {icon}
+            <span className="font-bold text-lg">{label}</span>
+        </button>
+    );
+
+    return (
+        <div className="min-h-screen bg-sky-50 text-slate-800 font-sans pb-10 relative">
+            {/* Notification Toast */}
+            {notification && (
+                <div className={`fixed top-4 left-1/2 -translate-x-1/2 z-50 px-6 py-3 rounded-full text-white font-medium shadow-lg animate-in slide-in-from-top-4 ${notification.isError ? 'bg-rose-500' : 'bg-slate-800'}`}>
+                    {notification.msg}
+                </div>
+            )}
+
+            {/* Header Navbar */}
+            <header className="bg-white m-4 p-4 rounded-[2rem] shadow-sm flex flex-col sm:flex-row items-center justify-between border border-slate-100 z-10 relative">
+                <div className="flex items-center gap-4 pl-2 mb-4 sm:mb-0 w-full sm:w-auto">
+                    <div className="bg-amber-400 w-14 h-14 rounded-2xl flex items-center justify-center shadow-inner relative overflow-hidden flex-shrink-0">
+                         <div className="absolute bottom-0 w-full h-1/2 bg-amber-500 opacity-50 rounded-t-[50%]"></div>
+                         <span className="text-3xl relative z-10">🌱</span>
+                    </div>
+                    <div>
+                        <h1 className="text-2xl font-bold text-slate-800 flex items-center gap-2 flex-wrap">
+                            班級點數
+                            <span className="bg-sky-100 text-sky-700 text-xs px-3 py-1 rounded-full font-medium whitespace-nowrap flex items-center gap-1">
+                                <KeyRound className="w-3 h-3"/> 代碼: {classId}
+                            </span>
+                        </h1>
+                        <p className="text-slate-500 text-sm mt-1">
+                            {syncStatus === 'syncing' ? <span className="flex items-center gap-1 text-teal-500"><Loader2 className="w-3 h-3 animate-spin"/> 同步中...</span> : '一起努力，創造更棒的班級！'}
+                        </p>
+                    </div>
+                </div>
+
+                <div className="flex items-center gap-3 pr-2 w-full sm:w-auto justify-end">
+                    <div className="bg-amber-50 text-amber-800 px-6 py-2.5 rounded-full font-bold flex items-center gap-2 border border-amber-100">
+                        <Award className="w-5 h-5 text-amber-500" />
+                        班級總點數
+                        <span className="text-2xl ml-1 text-amber-600">{totalClassPoints}</span>
+                    </div>
+                    
+                    {activeTab === 'dashboard' ? (
+                        <button 
+                            onClick={() => setActiveTab('students')}
+                            className="flex items-center gap-2 px-4 py-2.5 bg-slate-100 hover:bg-slate-200 rounded-full text-slate-700 font-medium transition-colors"
+                        >
+                            <Settings className="w-5 h-5" />
+                            <span className="hidden sm:inline">班級管理</span>
+                        </button>
+                    ) : (
+                        <button 
+                            onClick={() => setActiveTab('dashboard')}
+                            className="flex items-center gap-2 px-4 py-2.5 bg-teal-100 hover:bg-teal-200 text-teal-800 rounded-full font-medium transition-colors"
+                        >
+                            返回主控台
+                        </button>
+                    )}
+                    
+                    <button 
+                        onClick={handleLogout}
+                        className="p-2.5 bg-rose-50 text-rose-500 hover:bg-rose-100 rounded-full transition-colors"
+                        title="登出切換班級"
+                    >
+                        <LogOut className="w-5 h-5" />
+                    </button>
+                </div>
+            </header>
+
+            <main className="p-4 max-w-[1400px] mx-auto">
+                {isLoading && students.length === 0 ? (
+                    <div className="flex flex-col items-center justify-center py-20">
+                        <Loader2 className="w-12 h-12 text-teal-500 animate-spin mb-4" />
+                        <p className="text-slate-500">載入中...</p>
+                    </div>
+                ) : activeTab === 'dashboard' ? (
+                    <div className="grid grid-cols-1 xl:grid-cols-3 gap-6">
+                        {/* Left Column: Menu Items */}
+                        <div className="xl:col-span-2 grid grid-cols-1 md:grid-cols-2 gap-4 h-fit">
+                            {renderMenuButton(
+                                <div className="text-4xl">⭐</div>, "個人點數", "bg-gradient-to-br from-rose-400 to-rose-500", 
+                                () => document.getElementById('student-select')?.focus()
+                            )}
+                            {renderMenuButton(
+                                <div className="text-4xl">👥</div>, "小組任務", "bg-gradient-to-br from-amber-400 to-orange-500", 
+                                () => console.log("小組任務")
+                            )}
+                            {renderMenuButton(
+                                <div className="text-4xl">⏱️</div>, "課堂計時", "bg-gradient-to-br from-blue-400 to-blue-500", 
+                                () => console.log("課堂計時")
+                            )}
+                            {renderMenuButton(
+                                <div className="text-4xl">🎁</div>, "兌換商店", "bg-gradient-to-br from-purple-400 to-purple-500", 
+                                () => console.log("兌換商店")
+                            )}
+                            {renderMenuButton(
+                                <div className="text-4xl">🎲</div>, "隨機抽點", "bg-gradient-to-br from-emerald-400 to-emerald-500", 
+                                () => console.log("隨機抽點")
+                            )}
+                            {renderMenuButton(
+                                <div className="text-4xl">🐱</div>, "寵物世界", "bg-gradient-to-br from-green-400 to-green-500", 
+                                () => console.log("寵物世界")
+                            )}
+                        </div>
+
+                        {/* Right Column: Side Panels */}
+                        <div className="space-y-6">
+                            
+                            {/* Recent Logs Panel */}
+                            <div className="bg-white rounded-3xl p-6 shadow-sm border border-slate-100 h-64 flex flex-col relative overflow-hidden">
+                                <div className="absolute top-0 right-0 w-32 h-32 bg-slate-50 rounded-bl-full -z-10"></div>
+                                <div className="flex items-center justify-between mb-4 pb-2 border-b border-slate-100">
+                                    <h3 className="font-bold flex items-center gap-2 text-slate-700">
+                                        <History className="w-5 h-5 text-teal-500" />
+                                        最近加分紀錄
+                                    </h3>
+                                    <button 
+                                        onClick={handleClearLogs}
+                                        className="text-sm text-slate-400 hover:text-slate-600 transition-colors"
+                                    >
+                                        清空
+                                    </button>
+                                </div>
+                                <div className="flex-1 overflow-y-auto pr-2 custom-scrollbar">
+                                    {logs.length === 0 ? (
+                                        <div className="h-full flex items-center justify-center text-slate-400 text-sm">
+                                            暫無異動紀錄
+                                        </div>
+                                    ) : (
+                                        <div className="space-y-3">
+                                            {logs.map(log => (
+                                                <div key={log.id} className="flex items-center justify-between text-sm">
+                                                    <div className="flex items-center gap-2">
+                                                        <div className="w-2 h-2 rounded-full bg-teal-400"></div>
+                                                        <span className="font-medium text-slate-700">{log.studentName}</span>
+                                                        <span className="text-slate-500 text-xs bg-slate-100 px-2 py-0.5 rounded-md truncate max-w-[100px]">{log.reason}</span>
+                                                    </div>
+                                                    <span className={`font-bold ${log.points >= 0 ? 'text-teal-600' : 'text-rose-500'}`}>
+                                                        {log.points > 0 ? `+${log.points}` : log.points}
+                                                    </span>
+                                                </div>
+                                            ))}
+                                        </div>
+                                    )}
+                                </div>
+                            </div>
+
+                            {/* Quick Add Panel */}
+                            <div className="bg-[#e6fbf9] rounded-3xl p-6 shadow-sm border border-teal-100">
+                                <h3 className="font-bold flex items-center gap-2 text-teal-800 mb-6 text-lg">
+                                    <span className="text-amber-500 text-xl">⚡</span> 快速加分
+                                </h3>
+                                
+                                <div className="space-y-5">
+                                    <div>
+                                        <label className="block text-sm text-teal-800 mb-2 font-medium">1. 選擇學生：</label>
+                                        <select 
+                                            id="student-select"
+                                            className="w-full p-3 rounded-xl border-0 shadow-sm text-slate-700 focus:ring-2 focus:ring-teal-400"
+                                            value={selectedStudentId}
+                                            onChange={(e) => setSelectedStudentId(e.target.value)}
+                                        >
+                                            <option value="">-- 請選擇學生 --</option>
+                                            {students.map(s => (
+                                                <option key={s.id} value={s.id}>{s.seatNumber ? `${s.seatNumber}. ` : ''}{s.name}</option>
+                                            ))}
+                                        </select>
+                                    </div>
+
+                                    <div>
+                                        <label className="block text-sm text-teal-800 mb-2 font-medium">2. 選擇事由 (可選)：</label>
+                                        <div className="flex flex-wrap gap-2">
+                                            {DEFAULT_REASONS.map(reason => (
+                                                <button
+                                                    key={reason.id}
+                                                    onClick={() => setSelectedReason(selectedReason?.id === reason.id ? null : reason)}
+                                                    className={`px-3 py-1.5 rounded-full text-sm font-medium transition-colors shadow-sm ${
+                                                        selectedReason?.id === reason.id 
+                                                        ? 'bg-teal-600 text-white' 
+                                                        : 'bg-white text-teal-700 hover:bg-teal-50'
+                                                    }`}
+                                                >
+                                                    {reason.label}
+                                                </button>
+                                            ))}
+                                        </div>
+                                    </div>
+
+                                    <div>
+                                        <label className="block text-sm text-teal-800 mb-2 font-medium">3. 點擊分數：</label>
+                                        <div className="grid grid-cols-3 gap-3">
+                                            <button onClick={() => handleAddPoints(1)} className="bg-[#2dd4bf] hover:bg-teal-400 active:scale-95 text-white py-3 rounded-2xl font-bold text-xl shadow-sm transition-all">+1</button>
+                                            <button onClick={() => handleAddPoints(2)} className="bg-[#2dd4bf] hover:bg-teal-400 active:scale-95 text-white py-3 rounded-2xl font-bold text-xl shadow-sm transition-all">+2</button>
+                                            <button onClick={() => handleAddPoints(5)} className="bg-[#2dd4bf] hover:bg-teal-400 active:scale-95 text-white py-3 rounded-2xl font-bold text-xl shadow-sm transition-all">+5</button>
+                                        </div>
+                                        <div className="mt-3">
+                                             <button onClick={() => handleAddPoints(-1)} className="w-full bg-white hover:bg-rose-50 text-rose-500 py-2.5 rounded-xl font-bold transition-colors border border-rose-100 text-sm">
+                                                扣 1 分
+                                            </button>
+                                        </div>
+                                    </div>
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+                ) : (
+                    <div className="bg-white rounded-3xl p-8 shadow-sm border border-slate-100 min-h-[600px]">
+                        <div className="flex flex-col sm:flex-row justify-between items-start sm:items-center mb-8 gap-4 border-b border-slate-100 pb-6">
+                            <h2 className="text-2xl font-bold text-slate-800 flex items-center gap-3">
+                                <div className="bg-teal-100 p-2 rounded-xl text-teal-600">
+                                    <Users className="w-6 h-6" />
+                                </div>
+                                班級學生管理
+                            </h2>
+                            <div className="flex flex-wrap gap-2">
+                                <button onClick={() => openStudentModal(null, false)} className="px-4 py-2 bg-teal-500 hover:bg-teal-600 text-white rounded-xl font-medium flex items-center gap-2 shadow-sm">
+                                    <UserPlus className="w-4 h-4" /> 新增單一
+                                </button>
+                                <button onClick={() => openStudentModal(null, true)} className="px-4 py-2 bg-blue-500 hover:bg-blue-600 text-white rounded-xl font-medium flex items-center gap-2 shadow-sm">
+                                    <Users className="w-4 h-4" /> 批次匯入
+                                </button>
+                                <button onClick={requestResetAllPoints} className="px-4 py-2 bg-rose-50 hover:bg-rose-100 text-rose-600 rounded-xl font-medium flex items-center gap-2 border border-rose-100 ml-auto">
+                                    重置全班點數
+                                </button>
+                            </div>
+                        </div>
+
+                        {students.length === 0 ? (
+                            <div className="text-center py-24 bg-slate-50 rounded-3xl border-2 border-dashed border-slate-200">
+                                <div className="bg-white w-20 h-20 rounded-full flex items-center justify-center mx-auto mb-6 shadow-sm"><Users className="w-10 h-10 text-slate-400" /></div>
+                                <h3 className="text-xl font-bold text-slate-700 mb-2">尚未建立學生名單</h3>
+                                <button onClick={() => openStudentModal(null, true)} className="mt-4 text-teal-600 font-bold bg-teal-50 px-6 py-3 rounded-xl hover:bg-teal-100 transition-colors">
+                                    點此開始批次匯入
+                                </button>
+                            </div>
+                        ) : (
+                            <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-5 xl:grid-cols-6 gap-4">
+                                {students.map(student => (
+                                    <div key={student.id} className="bg-slate-50 hover:bg-white rounded-2xl p-5 border border-slate-100 hover:border-teal-200 flex flex-col items-center relative group transition-all shadow-sm hover:shadow-md">
+                                        <div className="absolute top-2 right-2 flex flex-col gap-1 opacity-0 group-hover:opacity-100 transition-opacity">
+                                            <button onClick={() => openStudentModal(student)} className="p-1.5 bg-blue-50 text-blue-500 hover:bg-blue-500 hover:text-white rounded-lg">
+                                                <Edit2 className="w-3.5 h-3.5" />
+                                            </button>
+                                            <button onClick={() => requestDeleteStudent(student.id)} className="p-1.5 bg-rose-50 text-rose-500 hover:bg-rose-500 hover:text-white rounded-lg">
+                                                <Trash2 className="w-3.5 h-3.5" />
+                                            </button>
+                                        </div>
+                                        
+                                        <div className="w-16 h-16 bg-indigo-100 text-indigo-600 rounded-full flex items-center justify-center mb-3 font-bold text-2xl shadow-inner">
+                                            {student.name.charAt(0)}
+                                        </div>
+                                        <div className="text-center w-full">
+                                            <div className="font-bold text-slate-800 text-base truncate">
+                                                {student.seatNumber && <span className="text-slate-400 text-xs mr-1 font-normal">{student.seatNumber}.</span>}
+                                                {student.name}
+                                            </div>
+                                            <div className="bg-teal-50 text-teal-700 font-bold mt-2 py-1 px-3 rounded-lg inline-flex items-center justify-center gap-1.5 border border-teal-100">
+                                                <Award className="w-3.5 h-3.5 text-amber-500" />
+                                                {student.points || 0}
+                                            </div>
+                                        </div>
+                                    </div>
+                                ))}
+                            </div>
+                        )}
+                    </div>
+                )}
+            </main>
+
+            {/* Custom Confirm Dialog Modal */}
+            {confirmDialog.isOpen && (
+                <div className="fixed inset-0 bg-slate-900/40 backdrop-blur-sm flex items-center justify-center p-4 z-[60]">
+                    <div className="bg-white rounded-3xl w-full max-w-sm shadow-2xl overflow-hidden animate-in zoom-in-95 duration-200 p-6">
+                        <h3 className="font-bold text-xl text-slate-800 mb-2">{confirmDialog.title}</h3>
+                        <p className="text-slate-600 mb-8">{confirmDialog.message}</p>
+                        <div className="flex justify-end gap-3">
+                            <button onClick={() => setConfirmDialog({ isOpen: false })} className="px-5 py-2.5 rounded-xl font-medium text-slate-600 hover:bg-slate-100">
+                                取消
+                            </button>
+                            <button onClick={confirmDialog.onConfirm} className="px-5 py-2.5 rounded-xl font-medium text-white bg-rose-500 hover:bg-rose-600 shadow-sm">
+                                確定執行
+                            </button>
+                        </div>
+                    </div>
+                </div>
+            )}
+
+            {/* Student Edit/Add Modal */}
+            {isStudentModalOpen && (
+                <div className="fixed inset-0 bg-slate-900/40 backdrop-blur-sm flex items-center justify-center p-4 z-50">
+                    <div className="bg-white rounded-3xl w-full max-w-lg shadow-2xl overflow-hidden animate-in fade-in zoom-in duration-200">
+                        <div className="px-6 py-4 border-b border-slate-100 flex justify-between items-center bg-slate-50">
+                            <h3 className="font-bold text-lg text-slate-800 flex items-center gap-2">
+                                {isBatchMode ? <Users className="w-5 h-5 text-blue-500"/> : <UserPlus className="w-5 h-5 text-teal-500"/>}
+                                {isBatchMode ? '批次匯入學生' : (editingStudent ? '編輯學生資料' : '新增單一學生')}
+                            </h3>
+                            <button onClick={closeStudentModal} className="text-slate-400 hover:text-slate-600 bg-white p-1 rounded-full hover:bg-slate-200"><X className="w-5 h-5" /></button>
+                        </div>
+                        
+                        <div className="p-6">
+                            {isBatchMode ? (
+                                <div>
+                                    <div className="bg-blue-50 text-blue-800 p-3 rounded-xl text-sm mb-4 border border-blue-100">
+                                        請貼上學生名單，每行一位。<br/>支援格式：直接輸入姓名，或「座號 姓名」(例如: 1 王小明)
+                                    </div>
+                                    <textarea 
+                                        className="w-full h-64 p-4 border border-slate-200 rounded-2xl focus:ring-2 focus:ring-blue-500 focus:outline-none resize-none bg-slate-50 focus:bg-white"
+                                        placeholder="1 王大明&#10;2 李小梅"
+                                        value={batchStudentInput}
+                                        onChange={(e) => setBatchStudentInput(e.target.value)}
+                                    ></textarea>
+                                </div>
+                            ) : (
+                                <div>
+                                    <label className="block text-sm font-medium text-slate-700 mb-1.5">學生姓名</label>
+                                    <input 
+                                        type="text"
+                                        className="w-full p-3.5 border border-slate-200 rounded-xl focus:ring-2 focus:ring-teal-500 focus:outline-none bg-slate-50 focus:bg-white"
+                                        placeholder="請輸入姓名"
+                                        value={studentFormName}
+                                        onChange={(e) => setStudentFormName(e.target.value)}
+                                        onKeyDown={(e) => e.key === 'Enter' && handleSaveStudent()}
+                                        autoFocus
+                                    />
+                                </div>
+                            )}
+                        </div>
+
+                        <div className="px-6 py-4 bg-slate-50 border-t border-slate-100 flex justify-end gap-3">
+                            <button onClick={closeStudentModal} className="px-5 py-2.5 rounded-xl font-medium text-slate-600 hover:bg-slate-200">取消</button>
+                            <button onClick={handleSaveStudent} className={`px-6 py-2.5 rounded-xl font-medium text-white flex items-center gap-2 ${isBatchMode ? 'bg-blue-500 hover:bg-blue-600' : 'bg-teal-500 hover:bg-teal-600'}`}>
+                                <Save className="w-4 h-4" /> {isBatchMode ? '開始匯入' : '儲存資料'}
+                            </button>
+                        </div>
+                    </div>
+                </div>
+            )}
+
+            <style dangerouslySetInnerHTML={{__html: `
+                .custom-scrollbar::-webkit-scrollbar { width: 6px; }
+                .custom-scrollbar::-webkit-scrollbar-track { background: transparent; }
+                .custom-scrollbar::-webkit-scrollbar-thumb { background-color: #cbd5e1; border-radius: 20px; }
+                .custom-scrollbar::-webkit-scrollbar-thumb:hover { background-color: #94a3b8; }
+            `}} />
+        </div>
+    );
+}
