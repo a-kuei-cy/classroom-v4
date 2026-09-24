@@ -18,8 +18,8 @@
     <script type="text/babel">
         const { useState, useEffect } = React;
 
-        // 請替換為您的 Google Apps Script 網址
-        const GAS_URL = "YOUR_GOOGLE_APPS_SCRIPT_WEB_APP_URL"; 
+        // 已設定為您的專屬 Google Apps Script 網址
+        const GAS_URL = "https://script.google.com/macros/s/AKfycbzLA8U7i1QlpMUpRiXfCZQd8zxmouIe4F5Ol4Jnzq2mlSUosujJN7lwCqFHl8_lHnnjow/exec"; 
 
         const DEFAULT_REASONS = [
             { id: 'r1', label: '上課專注', points: 1 },
@@ -30,7 +30,7 @@
             { id: 'r6', label: '秩序良好', points: 1 },
         ];
 
-        // 本地模擬資料庫
+        // 本地模擬資料庫 (僅於 GAS 網址無效時作為備用)
         let mockDB = {
             students: [
                 { id: 'm1', classId: '三年二班-王老師', name: '張小明', seatNumber: '1', points: 12 },
@@ -293,7 +293,7 @@
             };
 
             const callGasApi = async (action, payload = {}, authAdminKey = null) => {
-                if (GAS_URL === "YOUR_GOOGLE_APPS_SCRIPT_WEB_APP_URL") {
+                if (!GAS_URL || GAS_URL === "YOUR_GOOGLE_APPS_SCRIPT_WEB_APP_URL") {
                     return new Promise(resolve => {
                         setTimeout(() => {
                             let result = { success: false };
